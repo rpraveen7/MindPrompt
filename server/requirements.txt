@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+litellm
+textstat
+tiktoken
+faiss-cpu
+sentence-transformers
+supabase
+python-dotenv
+numpy
+scikit-learn
+requests

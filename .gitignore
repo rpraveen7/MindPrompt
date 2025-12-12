@@ -1,0 +1,18 @@
+# Backend - Python
+server/venv/
+server/__pycache__/
+server/*.pyc
+server/.env
+server/users.db
+server/faiss_index.bin
+server/golden_prompts.json
+
+# Frontend - Node (in case run from root)
+client/node_modules/
+client/.next/
+client/.env
+client/.env.local
+client/.DS_Store
+
+# OS
+.DS_Store
