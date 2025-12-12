@@ -67,8 +67,8 @@ Create a `.env` file in `server/`:
 
 ```env
 # server/.env
-GEMINI_API_KEY=AIzaSy...
-DATABASE_URL=postgresql://postgres:[PASSWORD]@db.[PROJECT].supabase.co:5432/postgres
+GEMINI_API_KEY=...
+DATABASE_URL=...
 ```
 
 ### **4. Initialize Data**
