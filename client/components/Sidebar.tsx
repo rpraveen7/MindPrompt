@@ -6,10 +6,17 @@ interface Prompt {
     prompt: string;
 }
 
+interface Metric {
+    token_count: number;
+    readability_score: number;
+}
+
 interface HistoryItem {
     id: string;
     original: string;
     optimized: string;
+    original_metrics: Metric;
+    optimized_metrics: Metric;
     timestamp: number;
 }
 
