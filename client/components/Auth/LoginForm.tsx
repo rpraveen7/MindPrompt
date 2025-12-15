@@ -29,7 +29,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({ onLogin, onForgotPassword 
             
             const data = await res.json();
             onLogin(data.access_token);
-        } catch (err) {
+        } catch {
             setError('Invalid credentials. Please try again.');
         } finally {
             setLoading(false);

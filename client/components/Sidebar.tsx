@@ -1,5 +1,5 @@
 import React from 'react';
-import { BookOpen, Clock, History, X } from 'lucide-react';
+import { BookOpen, Clock, X } from 'lucide-react';
 
 interface Prompt {
     act?: string;

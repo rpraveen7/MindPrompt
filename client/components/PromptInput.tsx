@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Wand2, Loader2 } from 'lucide-react';
 
 interface PromptInputProps {

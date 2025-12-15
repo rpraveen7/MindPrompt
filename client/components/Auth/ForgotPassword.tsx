@@ -21,7 +21,7 @@ export const ForgotPassword: React.FC<ForgotPasswordProps> = ({ onBack }) => {
                 body: JSON.stringify({ username })
             });
             setSent(true);
-        } catch (err) {
+        } catch {
             // Ignore error for mock
             setSent(true);
         } finally {
@@ -60,7 +60,7 @@ export const ForgotPassword: React.FC<ForgotPasswordProps> = ({ onBack }) => {
             </div>
             <h3 className="font-semibold text-slate-200">Trouble logging in?</h3>
             <p className="text-sm text-slate-400 px-4 mb-4">
-                Enter your username and we'll send you a link to get back into your account.
+                Enter your username and we&apos;ll send you a link to get back into your account.
             </p>
 
             <div>
