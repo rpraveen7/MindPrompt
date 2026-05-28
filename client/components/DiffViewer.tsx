@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { Copy, Check, Download } from 'lucide-react';
 
 interface DiffViewerProps {
     oldValue: string;
@@ -6,6 +7,25 @@ interface DiffViewerProps {
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({ oldValue, newValue }) => {
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = async () => {
+        await navigator.clipboard.writeText(newValue);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
+    const handleExport = () => {
+        const content = `# MindPrompt Export\n\n## Original Prompt\n${oldValue}\n\n## Optimized Prompt (CO-STAR)\n${newValue}`;
+        const blob = new Blob([content], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'mindprompt-export.md';
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
     if (!oldValue && !newValue) return (
         <div className="flex-1 flex items-center justify-center text-slate-500 bg-slate-900 h-full">
             <p>Enter a prompt above to see the optimization result.</p>
@@ -33,12 +53,28 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ oldValue, newValue }) =>
                     <h3 className="text-sm font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
                         Optimized Prompt
                     </h3>
-                    <span className="text-xs text-emerald-500/70 font-mono">CO-STAR Output</span>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-emerald-500/70 font-mono">CO-STAR Output</span>
+                        <button
+                            onClick={handleCopy}
+                            title="Copy to clipboard"
+                            className="text-slate-400 hover:text-emerald-400 transition-colors p-1"
+                        >
+                            {copied ? <Check size={14} /> : <Copy size={14} />}
+                        </button>
+                        <button
+                            onClick={handleExport}
+                            title="Export as .md"
+                            className="text-slate-400 hover:text-emerald-400 transition-colors p-1"
+                        >
+                            <Download size={14} />
+                        </button>
+                    </div>
                 </div>
                 <div className="flex-1 overflow-auto p-4 bg-slate-900/50 relative">
                      {/* Subtle grid pattern for the "engineered" look */}
                     <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 pointer-events-none"></div>
-                    
+
                     <pre className="whitespace-pre-wrap font-mono text-sm text-emerald-100 leading-relaxed max-w-none relative z-10">
                         {newValue}
                     </pre>
