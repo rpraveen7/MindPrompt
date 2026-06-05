@@ -255,23 +255,37 @@ async def simulate_prompt(req: SimulateRequest, x_gemini_api_key: Optional[str] 
             status_code=401,
             detail="No Gemini API key provided. Add your key in the settings panel."
         )
+
+    def run_completion(prompt: str) -> str:
+        resp = completion(
+            model=req.model,
+            api_key=x_gemini_api_key,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        # content can be None when Gemini blocks a response via safety filters
+        content = resp.choices[0].message.content
+        if content is None:
+            return "[Response blocked by content safety filter]"
+        return content
+
     try:
-        resp_orig = completion(
-            model=req.model,
-            api_key=x_gemini_api_key,
-            messages=[{"role": "user", "content": req.original_prompt}]
-        )
-        resp_opt = completion(
-            model=req.model,
-            api_key=x_gemini_api_key,
-            messages=[{"role": "user", "content": req.optimized_prompt}]
-        )
-        return SimulateResponse(
-            original_output=resp_orig.choices[0].message.content,
-            optimized_output=resp_opt.choices[0].message.content
-        )
+        original_output = run_completion(req.original_prompt)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Simulation Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Simulation error (original prompt): {str(e)}")
+
+    try:
+        optimized_output = run_completion(req.optimized_prompt)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Simulation error (optimized prompt): {str(e)}")
+
+    return SimulateResponse(
+        original_output=original_output,
+        optimized_output=optimized_output
+    )
 
 @app.get("/history", response_model=List[HistoryItemResponse])
 async def get_history(x_gemini_api_key: Optional[str] = Header(None)):
