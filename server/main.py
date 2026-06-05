@@ -1,5 +1,6 @@
 import os
 import json
+import hashlib
 import faiss
 import numpy as np
 import textstat
@@ -7,36 +8,24 @@ import tiktoken
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from litellm import completion
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
-from passlib.context import CryptContext
-from jose import JWTError, jwt
 
 load_dotenv()
 
-# DEBUG: Check if key is loaded
-api_key = os.getenv("GEMINI_API_KEY")
-if api_key:
-    print(f"✅ GEMINI_API_KEY loaded: {api_key[:5]}...{api_key[-4:]}")
-else:
-    print("❌ GEMINI_API_KEY NOT FOUND in environment variables!")
-
-# Check DB URL
 db_url = os.getenv("DATABASE_URL")
 if db_url:
     print("✅ DATABASE_URL found.")
 else:
-    print("❌ DATABASE_URL NOT FOUND! Auth will fail.")
+    print("❌ DATABASE_URL NOT FOUND! History persistence will be disabled.")
 
 app = FastAPI(title="MindPrompt API")
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,66 +34,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- AUTH CONFIGURATION ---
-SECRET_KEY = "YOUR_SUPER_SECRET_KEY_CHANGE_THIS_IN_PROD" # In prod, load from .env
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30000 # Long session for demo
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-# --- DATABASE (PostgreSQL) ---
+# --- DATABASE ---
 def get_db_connection():
     try:
         conn = psycopg2.connect(os.getenv("DATABASE_URL"))
         return conn
     except Exception as e:
         print(f"❌ Database Connection Error: {e}")
-        raise HTTPException(status_code=500, detail="Database connection failed")
+        return None
 
 def init_db():
+    conn = get_db_connection()
+    if not conn:
+        print("⚠️  Skipping DB init — no connection available.")
+        return
     try:
-        conn = get_db_connection()
         cur = conn.cursor()
-        # Create users table if not exists
         cur.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS prompt_history (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                key_hash TEXT NOT NULL,
+                original_text TEXT NOT NULL,
+                optimized_text TEXT NOT NULL,
+                model_used TEXT,
+                token_count_original INTEGER,
+                token_count_optimized INTEGER,
+                readability_original FLOAT,
+                readability_optimized FLOAT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         ''')
+        cur.execute(
+            'CREATE INDEX IF NOT EXISTS idx_prompt_history_key_hash ON prompt_history(key_hash)'
+        )
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Database initialized (users table ready).")
+        print("✅ Database initialized.")
     except Exception as e:
         print(f"❌ Database Initialization Failed: {e}")
 
-# --- AUTH HELPERS ---
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-# --- AUTH MODELS ---
-class UserAuth(BaseModel):
-    username: str
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-# --- EXISTING LOGIC ---
+# --- RESOURCES ---
 INDEX_FILE = "faiss_index.bin"
 PROMPTS_JSON = "golden_prompts.json"
 SYSTEM_PROMPT = """
@@ -125,16 +98,14 @@ RULES:
 - Return ONLY the rewritten prompt. Do not add conversational filler like "Here is your prompt".
 """
 
-# Load FAISS and Model (Global state)
 faiss_index = None
 sentence_model = None
 golden_prompts_data = []
 
 def load_resources():
     global faiss_index, sentence_model, golden_prompts_data
-    init_db() # Initialize DB (Postgres)
+    init_db()
     try:
-        # Only load if files exist
         if os.path.exists(INDEX_FILE):
             print("Loading FAISS index...")
             faiss_index = faiss.read_index(INDEX_FILE)
@@ -144,7 +115,7 @@ def load_resources():
                 with open(PROMPTS_JSON, "r") as f:
                     golden_prompts_data = json.load(f)
         else:
-            print("FAISS index not found. Skipping vector search init. Run seed_faiss.py to create it.")
+            print("FAISS index not found. Run seed_faiss.py to create it.")
     except Exception as e:
         print(f"Error loading resources: {e}")
 
@@ -152,7 +123,7 @@ def load_resources():
 async def startup_event():
     load_resources()
 
-# Pydantic Models
+# --- MODELS ---
 class OptimizeRequest(BaseModel):
     prompt: str
     model: Optional[str] = "gemini/gemini-flash-latest"
@@ -177,7 +148,18 @@ class SimulateResponse(BaseModel):
     original_output: str
     optimized_output: str
 
-# Helper Functions
+class HistoryItemResponse(BaseModel):
+    id: str
+    original_text: str
+    optimized_text: str
+    model_used: Optional[str]
+    token_count_original: int
+    token_count_optimized: int
+    readability_original: float
+    readability_optimized: float
+    created_at: str
+
+# --- HELPERS ---
 def calculate_metrics(text: str) -> Metrics:
     try:
         encoding = tiktoken.get_encoding("cl100k_base")
@@ -185,100 +167,61 @@ def calculate_metrics(text: str) -> Metrics:
         readability = textstat.flesch_kincaid_grade(text)
         return Metrics(token_count=tokens, readability_score=readability)
     except Exception:
-        # Fallback if metrics fail
         return Metrics(token_count=0, readability_score=0.0)
 
 def search_similar_prompts(query: str, k: int = 3) -> List[Dict[str, str]]:
     if not faiss_index or not sentence_model:
-        print("❌ Search failed: FAISS index or model not loaded.")
         return []
-    
     try:
-        print(f"🔎 Searching for: '{query[:20]}...'")
         query_vector = sentence_model.encode([query])
         D, I = faiss_index.search(query_vector, k)
-        
         results = []
         for idx in I[0]:
-            if idx < len(golden_prompts_data) and idx >= 0:
+            if 0 <= idx < len(golden_prompts_data):
                 results.append(golden_prompts_data[idx])
-        
-        print(f"✅ Found {len(results)} similar prompts.")
         return results
     except Exception as e:
         print(f"❌ Search error: {e}")
         return []
 
-# --- AUTH ENDPOINTS ---
-
-@app.post("/auth/signup", response_model=Token)
-async def signup(user: UserAuth):
+def save_to_history(key_hash: str, original: str, optimized: str, model: str,
+                    orig_metrics: Metrics, opt_metrics: Metrics):
+    conn = get_db_connection()
+    if not conn:
+        return
     try:
-        conn = get_db_connection()
         cur = conn.cursor()
-        
-        # DEBUG: Inspect password
-        print(f"🔐 Signup Password Length: {len(user.password)}")
-        
-        hashed_pw = get_password_hash(user.password)
-        cur.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (user.username, hashed_pw))
+        cur.execute('''
+            INSERT INTO prompt_history
+                (key_hash, original_text, optimized_text, model_used,
+                 token_count_original, token_count_optimized,
+                 readability_original, readability_optimized)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        ''', (key_hash, original, optimized, model,
+              orig_metrics.token_count, opt_metrics.token_count,
+              orig_metrics.readability_score, opt_metrics.readability_score))
         conn.commit()
         cur.close()
         conn.close()
-        
-        # Auto-login on signup
-        access_token = create_access_token(data={"sub": user.username})
-        return {"access_token": access_token, "token_type": "bearer"}
-            
-    except psycopg2.errors.UniqueViolation:
-        raise HTTPException(status_code=400, detail="Username already taken")
     except Exception as e:
-        print(f"Signup Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"⚠️  Failed to save history: {e}")
 
-@app.post("/auth/login", response_model=Token)
-async def login(user: UserAuth):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT password_hash FROM users WHERE username = %s", (user.username,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    
-    if not row or not verify_password(user.password, row[0]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    access_token = create_access_token(data={"sub": user.username})
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@app.post("/auth/forgot-password")
-async def forgot_password(user: Dict[str, str]):
-    # Mock implementation - In production, use SendGrid/AWS SES
-    username = user.get('username')
-    print(f"📧 [MOCK EMAIL] Reset link sent to email associated with user: {username}")
-    return {"message": "If an account exists, a reset link has been sent."}
-
-# --- APP ENDPOINTS ---
+# --- ENDPOINTS ---
 
 @app.post("/optimize", response_model=OptimizeResponse)
-async def optimize_prompt(req: OptimizeRequest):
-    # 1. Calculate Initial Metrics
-    orig_metrics = calculate_metrics(req.prompt)
-    
-    # 2. Call LLM for Optimization
-    try:
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-             print("Warning: GEMINI_API_KEY not found in environment")
+async def optimize_prompt(req: OptimizeRequest, x_gemini_api_key: Optional[str] = Header(None)):
+    if not x_gemini_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="No Gemini API key provided. Add your key in the settings panel."
+        )
 
-        # Using litellm to support various providers
+    orig_metrics = calculate_metrics(req.prompt)
+
+    try:
         response = completion(
             model=req.model,
-            api_key=api_key,
+            api_key=x_gemini_api_key,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": req.prompt}
@@ -287,16 +230,16 @@ async def optimize_prompt(req: OptimizeRequest):
         optimized_text = response.choices[0].message.content
     except Exception as e:
         import traceback
-        print(f"❌ LLM Error Details:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"LLM Error: {str(e)}")
 
-    # 3. Calculate Final Metrics
     opt_metrics = calculate_metrics(optimized_text)
-    
-    # 4. Search Similar Prompts
     similar = search_similar_prompts(req.prompt)
-    
+
+    key_hash = hash_api_key(x_gemini_api_key)
+    save_to_history(key_hash, req.prompt, optimized_text, req.model or "gemini/gemini-flash-latest",
+                    orig_metrics, opt_metrics)
+
     return OptimizeResponse(
         original_prompt=req.prompt,
         optimized_prompt=optimized_text,
@@ -306,23 +249,80 @@ async def optimize_prompt(req: OptimizeRequest):
     )
 
 @app.post("/simulate", response_model=SimulateResponse)
-async def simulate_prompt(req: SimulateRequest):
+async def simulate_prompt(req: SimulateRequest, x_gemini_api_key: Optional[str] = Header(None)):
+    if not x_gemini_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="No Gemini API key provided. Add your key in the settings panel."
+        )
     try:
         resp_orig = completion(
             model=req.model,
+            api_key=x_gemini_api_key,
             messages=[{"role": "user", "content": req.original_prompt}]
         )
         resp_opt = completion(
             model=req.model,
+            api_key=x_gemini_api_key,
             messages=[{"role": "user", "content": req.optimized_prompt}]
         )
-        
         return SimulateResponse(
             original_output=resp_orig.choices[0].message.content,
             optimized_output=resp_opt.choices[0].message.content
         )
     except Exception as e:
-         raise HTTPException(status_code=500, detail=f"Simulation Error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Simulation Error: {str(e)}")
+
+@app.get("/history", response_model=List[HistoryItemResponse])
+async def get_history(x_gemini_api_key: Optional[str] = Header(None)):
+    if not x_gemini_api_key:
+        raise HTTPException(status_code=401, detail="No Gemini API key provided.")
+    key_hash = hash_api_key(x_gemini_api_key)
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute('''
+            SELECT id::text, original_text, optimized_text, model_used,
+                   COALESCE(token_count_original, 0) AS token_count_original,
+                   COALESCE(token_count_optimized, 0) AS token_count_optimized,
+                   COALESCE(readability_original, 0.0) AS readability_original,
+                   COALESCE(readability_optimized, 0.0) AS readability_optimized,
+                   created_at::text
+            FROM prompt_history
+            WHERE key_hash = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+        ''', (key_hash,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        print(f"History fetch error: {e}")
+        return []
+
+@app.delete("/history/{item_id}")
+async def delete_history_item(item_id: str, x_gemini_api_key: Optional[str] = Header(None)):
+    if not x_gemini_api_key:
+        raise HTTPException(status_code=401, detail="No Gemini API key provided.")
+    key_hash = hash_api_key(x_gemini_api_key)
+    conn = get_db_connection()
+    if not conn:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'DELETE FROM prompt_history WHERE id = %s AND key_hash = %s',
+            (item_id, key_hash)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"deleted": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 @app.get("/")
 def read_root():

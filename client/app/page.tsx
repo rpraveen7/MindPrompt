@@ -1,15 +1,17 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { PromptInput } from '../components/PromptInput';
 import { DiffViewer } from '../components/DiffViewer';
 import { MetricsBar } from '../components/MetricsBar';
 import { Sidebar } from '../components/Sidebar';
-import { Zap, LogOut } from 'lucide-react';
-import { AuthCard } from '../components/Auth/AuthCard';
-import { LoginForm } from '../components/Auth/LoginForm';
-import { SignupForm } from '../components/Auth/SignupForm';
-import { ForgotPassword } from '../components/Auth/ForgotPassword';
+import { ApiKeySetup } from '../components/ApiKeySetup';
+import { ApiKeySettings } from '../components/ApiKeySettings';
+import { SimulatePanel } from '../components/SimulatePanel';
+import { Zap, Settings } from 'lucide-react';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const STORAGE_KEY = 'mindprompt_api_key';
 
 interface Metric {
     token_count: number;
@@ -30,103 +32,152 @@ interface HistoryItem {
     timestamp: number;
 }
 
-type AuthView = 'login' | 'signup' | 'forgot';
+interface ApiHistoryItem {
+    id: string;
+    original_text: string;
+    optimized_text: string;
+    model_used: string | null;
+    token_count_original: number;
+    token_count_optimized: number;
+    readability_original: number;
+    readability_optimized: number;
+    created_at: string;
+}
+
+function mapApiHistory(item: ApiHistoryItem): HistoryItem {
+    return {
+        id: item.id,
+        original: item.original_text,
+        optimized: item.optimized_text,
+        original_metrics: {
+            token_count: item.token_count_original,
+            readability_score: item.readability_original,
+        },
+        optimized_metrics: {
+            token_count: item.token_count_optimized,
+            readability_score: item.readability_optimized,
+        },
+        timestamp: new Date(item.created_at).getTime(),
+    };
+}
 
 export default function Home() {
-    // Auth State
-    const [token, setToken] = useState<string | null>(null);
-    const [authView, setAuthView] = useState<AuthView>('login');
-    
-    // App State
+    const [apiKey, setApiKey] = useState<string | null>(null);
+    const [showSettings, setShowSettings] = useState(false);
+
     const [input, setInput] = useState('');
     const [original, setOriginal] = useState('');
     const [optimized, setOptimized] = useState('');
-    const [metrics, setMetrics] = useState<{ original: Metric, optimized: Metric } | null>(null);
+    const [metrics, setMetrics] = useState<{ original: Metric; optimized: Metric } | null>(null);
     const [similar, setSimilar] = useState<Prompt[]>([]);
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [loading, setLoading] = useState(false);
 
-    // Initial Load
-    useEffect(() => {
-        // 1. Check Token
-        const savedToken = localStorage.getItem('mindprompt_token');
-        if (savedToken) {
-            setToken(savedToken);
-        }
+    const [simulateResult, setSimulateResult] = useState<{ original: string; optimized: string } | null>(null);
+    const [simulateLoading, setSimulateLoading] = useState(false);
 
-        // 2. Load History
-        const savedHistory = localStorage.getItem('mindprompt_history');
-        if (savedHistory) {
-            try {
-                const parsed = JSON.parse(savedHistory);
-                // Filter items older than 7 days
-                const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
-                const valid = parsed.filter((item: HistoryItem) => item.timestamp > sevenDaysAgo);
-                
-                setHistory(valid);
-                
-                if (valid.length !== parsed.length) {
-                    localStorage.setItem('mindprompt_history', JSON.stringify(valid));
-                }
-            } catch (e) {
-                console.error("Failed to load history", e);
-            }
+    // Load API key from storage on mount
+    useEffect(() => {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) setApiKey(saved);
+    }, []);
+
+    // Load history from API whenever API key changes
+    const loadHistory = useCallback(async (key: string) => {
+        try {
+            const res = await fetch(`${API_URL}/history`, {
+                headers: { 'X-Gemini-Api-Key': key },
+            });
+            if (!res.ok) return;
+            const data: ApiHistoryItem[] = await res.json();
+            setHistory(data.map(mapApiHistory));
+        } catch {
+            // Non-fatal — history just won't load
         }
     }, []);
 
-    const handleLoginSuccess = (newToken: string) => {
-        localStorage.setItem('mindprompt_token', newToken);
-        setToken(newToken);
+    useEffect(() => {
+        if (apiKey) loadHistory(apiKey);
+        else setHistory([]);
+    }, [apiKey, loadHistory]);
+
+    const handleSaveApiKey = (key: string) => {
+        localStorage.setItem(STORAGE_KEY, key);
+        setApiKey(key);
     };
 
-    const handleLogout = () => {
-        localStorage.removeItem('mindprompt_token');
-        setToken(null);
-        setAuthView('login');
+    const handleClearApiKey = () => {
+        localStorage.removeItem(STORAGE_KEY);
+        setApiKey(null);
+        setShowSettings(false);
+        setHistory([]);
+        setOriginal('');
+        setOptimized('');
+        setMetrics(null);
+        setSimilar([]);
     };
 
     const handleOptimize = async (text: string) => {
+        if (!apiKey) return;
         setLoading(true);
         try {
-            const res = await fetch('http://localhost:8000/optimize', {
+            const res = await fetch(`${API_URL}/optimize`, {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
-                    // 'Authorization': `Bearer ${token}` // Uncomment when backend enforces auth
+                    'X-Gemini-Api-Key': apiKey,
                 },
-                body: JSON.stringify({ prompt: text })
+                body: JSON.stringify({ prompt: text }),
             });
-            
+
+            if (res.status === 401) {
+                alert('Your API key was rejected. Please check it in settings.');
+                return;
+            }
             if (!res.ok) throw new Error('Optimization failed');
-            
+
             const data = await res.json();
             setOriginal(data.original_prompt);
             setOptimized(data.optimized_prompt);
             setMetrics({
                 original: data.original_metrics,
-                optimized: data.optimized_metrics
+                optimized: data.optimized_metrics,
             });
             setSimilar(data.similar_prompts);
+            setSimulateResult(null);
 
-            // Save to History
-            const newItem: HistoryItem = {
-                id: crypto.randomUUID(),
-                original: data.original_prompt,
-                optimized: data.optimized_prompt,
-                original_metrics: data.original_metrics,
-                optimized_metrics: data.optimized_metrics,
-                timestamp: Date.now()
-            };
-            
-            const newHistory = [newItem, ...history];
-            setHistory(newHistory);
-            localStorage.setItem('mindprompt_history', JSON.stringify(newHistory));
-
+            // Refresh history from API (new item was saved server-side)
+            loadHistory(apiKey);
         } catch (err) {
             console.error(err);
-            alert("Failed to optimize prompt. Ensure backend is running.");
+            alert('Failed to optimize prompt. Ensure the backend is running.');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleCompare = async () => {
+        if (!apiKey || !original || !optimized) return;
+        setSimulateLoading(true);
+        setSimulateResult({ original: '', optimized: '' }); // open panel in loading state
+        try {
+            const res = await fetch(`${API_URL}/simulate`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Gemini-Api-Key': apiKey,
+                },
+                body: JSON.stringify({ original_prompt: original, optimized_prompt: optimized }),
+            });
+            if (!res.ok) throw new Error('Simulation failed');
+            const data = await res.json();
+            setSimulateResult({ original: data.original_output, optimized: data.optimized_output });
+        } catch (err) {
+            console.error(err);
+            alert('Simulation failed. Ensure the backend is running.');
+            setSimulateResult(null);
+        } finally {
+            setSimulateLoading(false);
         }
     };
 
@@ -136,100 +187,94 @@ export default function Home() {
         setOptimized(item.optimized);
         setMetrics({
             original: item.original_metrics,
-            optimized: item.optimized_metrics
+            optimized: item.optimized_metrics,
         });
+        setSimulateResult(null);
     };
 
-    const handleDeleteHistory = (id: string) => {
-        const newHistory = history.filter(item => item.id !== id);
-        setHistory(newHistory);
-        localStorage.setItem('mindprompt_history', JSON.stringify(newHistory));
+    const handleDeleteHistory = async (id: string) => {
+        if (!apiKey) return;
+        setHistory((prev) => prev.filter((h) => h.id !== id));
+        try {
+            await fetch(`${API_URL}/history/${id}`, {
+                method: 'DELETE',
+                headers: { 'X-Gemini-Api-Key': apiKey },
+            });
+        } catch {
+            // Silently fail — UI already updated optimistically
+        }
     };
 
-    // --- RENDER AUTH SCREENS ---
-    if (!token) {
-        if (authView === 'login') {
-            return (
-                <AuthCard
-                    footerLink={{
-                        text: "Don't have an account?",
-                        actionText: "Sign up",
-                        onAction: () => setAuthView('signup')
-                    }}
-                >
-                    <LoginForm 
-                        onLogin={handleLoginSuccess} 
-                        onForgotPassword={() => setAuthView('forgot')} 
-                    />
-                </AuthCard>
-            );
-        }
-        if (authView === 'signup') {
-            return (
-                <AuthCard
-                    footerLink={{
-                        text: "Have an account?",
-                        actionText: "Log in",
-                        onAction: () => setAuthView('login')
-                    }}
-                >
-                    <SignupForm onSignupSuccess={handleLoginSuccess} />
-                </AuthCard>
-            );
-        }
-        if (authView === 'forgot') {
-            return (
-                <AuthCard>
-                    <ForgotPassword onBack={() => setAuthView('login')} />
-                </AuthCard>
-            );
-        }
+    // Show API key setup screen if no key
+    if (!apiKey) {
+        return <ApiKeySetup onSubmit={handleSaveApiKey} />;
     }
 
-    // --- RENDER APP SCREEN ---
     return (
         <div className="flex h-screen bg-slate-900 font-sans text-slate-50">
-            {/* Sidebar */}
-            <Sidebar 
-                prompts={similar} 
+            <Sidebar
+                prompts={similar}
                 history={history}
-                onSelect={setInput} 
+                onSelect={setInput}
                 onSelectHistory={handleSelectHistory}
                 onDeleteHistory={handleDeleteHistory}
             />
-            
-            {/* Main Content */}
+
             <div className="flex-1 flex flex-col h-full overflow-hidden">
-                {/* Header */}
                 <header className="bg-slate-900 border-b border-slate-800 p-4 flex items-center justify-between shadow-sm z-10">
                     <div className="flex items-center gap-2 text-indigo-400">
                         <Zap className="w-6 h-6 fill-current" />
                         <h1 className="text-xl font-bold tracking-tight text-white">MindPrompt</h1>
                     </div>
-                    
                     <div className="flex items-center gap-4">
-                        <div className="text-xs text-slate-500 font-mono">v1.0.0</div>
-                        <button 
-                            onClick={handleLogout}
-                            className="text-slate-400 hover:text-red-400 transition-colors"
-                            title="Log out"
+                        <div className="text-xs text-slate-500 font-mono">v2.0.0</div>
+                        <button
+                            onClick={() => setShowSettings(true)}
+                            className="text-slate-400 hover:text-emerald-400 transition-colors"
+                            title="API Key Settings"
                         >
-                            <LogOut className="w-5 h-5" />
+                            <Settings className="w-5 h-5" />
                         </button>
                     </div>
                 </header>
-                
-                {/* Input Area */}
-                <PromptInput value={input} onChange={setInput} onOptimize={handleOptimize} isLoading={loading} />
-                
-                {/* Metrics */}
+
+                <PromptInput
+                    value={input}
+                    onChange={setInput}
+                    onOptimize={handleOptimize}
+                    isLoading={loading}
+                />
+
                 {metrics && (
                     <MetricsBar original={metrics.original} optimized={metrics.optimized} />
                 )}
-                
-                {/* Diff View */}
-                <DiffViewer oldValue={original} newValue={optimized} />
+
+                <DiffViewer
+                    oldValue={original}
+                    newValue={optimized}
+                    onCompare={handleCompare}
+                    compareLoading={simulateLoading}
+                />
             </div>
+
+            {/* Modals */}
+            {showSettings && (
+                <ApiKeySettings
+                    currentKey={apiKey}
+                    onSave={handleSaveApiKey}
+                    onClear={handleClearApiKey}
+                    onClose={() => setShowSettings(false)}
+                />
+            )}
+
+            {simulateResult !== null && (
+                <SimulatePanel
+                    originalOutput={simulateResult.original}
+                    optimizedOutput={simulateResult.optimized}
+                    loading={simulateLoading}
+                    onClose={() => setSimulateResult(null)}
+                />
+            )}
         </div>
     );
 }

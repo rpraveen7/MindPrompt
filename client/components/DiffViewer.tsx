@@ -1,12 +1,19 @@
 import React, { useState } from 'react';
-import { Copy, Check, Download } from 'lucide-react';
+import { Copy, Check, Download, Play, Loader2 } from 'lucide-react';
 
 interface DiffViewerProps {
     oldValue: string;
     newValue: string;
+    onCompare?: () => void;
+    compareLoading?: boolean;
 }
 
-export const DiffViewer: React.FC<DiffViewerProps> = ({ oldValue, newValue }) => {
+export const DiffViewer: React.FC<DiffViewerProps> = ({
+    oldValue,
+    newValue,
+    onCompare,
+    compareLoading = false,
+}) => {
     const [copied, setCopied] = useState(false);
 
     const handleCopy = async () => {
@@ -53,8 +60,23 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ oldValue, newValue }) =>
                     <h3 className="text-sm font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-2">
                         Optimized Prompt
                     </h3>
-                    <div className="flex items-center gap-2">
-                        <span className="text-xs text-emerald-500/70 font-mono">CO-STAR Output</span>
+                    <div className="flex items-center gap-1">
+                        {onCompare && (
+                            <button
+                                onClick={onCompare}
+                                disabled={compareLoading || !oldValue || !newValue}
+                                title="Compare actual LLM outputs side-by-side"
+                                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors px-2 py-1 rounded hover:bg-slate-700/50 border border-transparent hover:border-slate-600"
+                            >
+                                {compareLoading
+                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    : <Play className="w-3.5 h-3.5 fill-current" />
+                                }
+                                Compare Outputs
+                            </button>
+                        )}
+                        <div className="w-px h-4 bg-slate-700 mx-1" />
+                        <span className="text-xs text-emerald-500/70 font-mono">CO-STAR</span>
                         <button
                             onClick={handleCopy}
                             title="Copy to clipboard"
@@ -72,9 +94,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({ oldValue, newValue }) =>
                     </div>
                 </div>
                 <div className="flex-1 overflow-auto p-4 bg-slate-900/50 relative">
-                     {/* Subtle grid pattern for the "engineered" look */}
                     <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-5 pointer-events-none"></div>
-
                     <pre className="whitespace-pre-wrap font-mono text-sm text-emerald-100 leading-relaxed max-w-none relative z-10">
                         {newValue}
                     </pre>
