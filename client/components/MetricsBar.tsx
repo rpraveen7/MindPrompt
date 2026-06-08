@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { clsx } from 'clsx';
 
 interface Metric {
@@ -10,9 +10,10 @@ interface Metric {
 interface MetricsBarProps {
   original: Metric;
   optimized: Metric;
+  examplesUsed?: number;
 }
 
-export const MetricsBar: React.FC<MetricsBarProps> = ({ original, optimized }) => {
+export const MetricsBar: React.FC<MetricsBarProps> = ({ original, optimized, examplesUsed = 0 }) => {
   const tokenSaving = original.token_count - optimized.token_count;
   const tokenPercent = original.token_count > 0 ? (tokenSaving / original.token_count) * 100 : 0;
   
@@ -38,6 +39,16 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({ original, optimized }) =
         <ArrowRight className="w-4 h-4 text-slate-600" />
         <span className="font-bold text-sky-400">{optimized.readability_score}</span>
       </div>
+
+      {examplesUsed > 0 && (
+        <>
+          <div className="h-4 w-px bg-slate-700 mx-2 hidden sm:block" />
+          <div className="flex items-center gap-1.5 text-xs text-indigo-400 font-medium">
+            <Sparkles className="w-3.5 h-3.5" />
+            Optimized using {examplesUsed} reference {examplesUsed === 1 ? 'example' : 'examples'}
+          </div>
+        </>
+      )}
     </div>
   );
 };

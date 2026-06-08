@@ -68,7 +68,7 @@ export default function Home() {
     const [input, setInput] = useState('');
     const [original, setOriginal] = useState('');
     const [optimized, setOptimized] = useState('');
-    const [metrics, setMetrics] = useState<{ original: Metric; optimized: Metric } | null>(null);
+    const [metrics, setMetrics] = useState<{ original: Metric; optimized: Metric; examplesUsed: number } | null>(null);
     const [similar, setSimilar] = useState<Prompt[]>([]);
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [loading, setLoading] = useState(false);
@@ -142,6 +142,7 @@ export default function Home() {
             setMetrics({
                 original: data.original_metrics,
                 optimized: data.optimized_metrics,
+                examplesUsed: data.examples_used ?? 0,
             });
             setSimilar(data.similar_prompts);
             setSimulateResult(null);
@@ -188,6 +189,7 @@ export default function Home() {
         setMetrics({
             original: item.original_metrics,
             optimized: item.optimized_metrics,
+            examplesUsed: 0,
         });
         setSimulateResult(null);
     };
@@ -246,7 +248,11 @@ export default function Home() {
                 />
 
                 {metrics && (
-                    <MetricsBar original={metrics.original} optimized={metrics.optimized} />
+                    <MetricsBar
+                        original={metrics.original}
+                        optimized={metrics.optimized}
+                        examplesUsed={metrics.examplesUsed}
+                    />
                 )}
 
                 <DiffViewer
