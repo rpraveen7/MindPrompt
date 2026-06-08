@@ -138,6 +138,7 @@ class OptimizeResponse(BaseModel):
     original_metrics: Metrics
     optimized_metrics: Metrics
     similar_prompts: List[Dict[str, str]]
+    examples_used: int = 0
 
 class SimulateRequest(BaseModel):
     original_prompt: str
@@ -170,6 +171,7 @@ def calculate_metrics(text: str) -> Metrics:
         return Metrics(token_count=0, readability_score=0.0)
 
 def search_similar_prompts(query: str, k: int = 3) -> List[Dict[str, str]]:
+    """Return top-k similar golden prompts (no threshold — used for UI sidebar)."""
     if not faiss_index or not sentence_model:
         return []
     try:
@@ -183,6 +185,56 @@ def search_similar_prompts(query: str, k: int = 3) -> List[Dict[str, str]]:
     except Exception as e:
         print(f"❌ Search error: {e}")
         return []
+
+# L2 distance threshold for RAG injection.
+# all-MiniLM-L6-v2 outputs normalized vectors, so L2 ∈ [0, 2].
+# Golden prompts are long and detailed, so cosine similarity against short
+# user queries tends to land in the 0.3–0.6 range.
+# L2 < 1.2  ≈  cosine similarity > 0.28  — picks up topically related examples
+# while still excluding fully unrelated content.
+RAG_DISTANCE_THRESHOLD = 1.2
+
+def search_similar_for_rag(query: str, k: int = 3) -> List[Dict[str, str]]:
+    """Return similar prompts whose L2 distance is below RAG_DISTANCE_THRESHOLD.
+
+    Returns an empty list when no sufficiently similar examples exist, preserving
+    original behaviour for first-time users or unrelated queries.
+    """
+    if not faiss_index or not sentence_model:
+        print("⚠️  RAG skipped: FAISS index not loaded. Run seed_faiss.py to enable.")
+        return []
+    try:
+        query_vector = sentence_model.encode([query])
+        D, I = faiss_index.search(query_vector, k)
+        dists = [float(d) for d in D[0]]
+        print(f"🔍 RAG distances (top-{k}): {[f'{d:.3f}' for d in dists]} — threshold={RAG_DISTANCE_THRESHOLD}")
+        results = []
+        for dist, idx in zip(D[0], I[0]):
+            if 0 <= idx < len(golden_prompts_data) and float(dist) < RAG_DISTANCE_THRESHOLD:
+                results.append(golden_prompts_data[idx])
+        print(f"🔍 RAG: {len(results)}/{k} examples passed threshold")
+        return results
+    except Exception as e:
+        print(f"❌ RAG search error: {e}")
+        return []
+
+def build_rag_context(examples: List[Dict[str, str]]) -> str:
+    """Format few-shot examples for injection into the system prompt."""
+    lines = [
+        "\n---",
+        "REFERENCE EXAMPLES",
+        f"The following {len(examples)} semantically similar, well-structured prompt(s) are provided as",
+        "style and specificity references. Use them to calibrate the quality of your rewrite —",
+        "do NOT copy them verbatim; they are inspiration, not templates.\n",
+    ]
+    for i, ex in enumerate(examples, 1):
+        act = ex.get("act", "General")
+        prompt = ex.get("prompt", "")
+        lines.append(f"Example {i} [{act}]:")
+        lines.append(prompt)
+        lines.append("")
+    lines.append("---")
+    return "\n".join(lines)
 
 def save_to_history(key_hash: str, original: str, optimized: str, model: str,
                     orig_metrics: Metrics, opt_metrics: Metrics):
@@ -218,12 +270,19 @@ async def optimize_prompt(req: OptimizeRequest, x_gemini_api_key: Optional[str] 
 
     orig_metrics = calculate_metrics(req.prompt)
 
+    # RAG: retrieve similar golden prompts above similarity threshold
+    rag_examples = search_similar_for_rag(req.prompt)
+    if rag_examples:
+        system_prompt = SYSTEM_PROMPT + build_rag_context(rag_examples)
+    else:
+        system_prompt = SYSTEM_PROMPT
+
     try:
         response = completion(
             model=req.model,
             api_key=x_gemini_api_key,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": req.prompt}
             ]
         )
@@ -245,7 +304,8 @@ async def optimize_prompt(req: OptimizeRequest, x_gemini_api_key: Optional[str] 
         optimized_prompt=optimized_text,
         original_metrics=orig_metrics,
         optimized_metrics=opt_metrics,
-        similar_prompts=similar
+        similar_prompts=similar,
+        examples_used=len(rag_examples)
     )
 
 @app.post("/simulate", response_model=SimulateResponse)
