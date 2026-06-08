@@ -187,9 +187,12 @@ def search_similar_prompts(query: str, k: int = 3) -> List[Dict[str, str]]:
         return []
 
 # L2 distance threshold for RAG injection.
-# all-MiniLM-L6-v2 outputs normalized vectors, so L2 in [0, 2].
-# L2 < 1.0  ≈  cosine similarity > 0.5  (genuinely related topic).
-RAG_DISTANCE_THRESHOLD = 1.0
+# all-MiniLM-L6-v2 outputs normalized vectors, so L2 ∈ [0, 2].
+# Golden prompts are long and detailed, so cosine similarity against short
+# user queries tends to land in the 0.3–0.6 range.
+# L2 < 1.2  ≈  cosine similarity > 0.28  — picks up topically related examples
+# while still excluding fully unrelated content.
+RAG_DISTANCE_THRESHOLD = 1.2
 
 def search_similar_for_rag(query: str, k: int = 3) -> List[Dict[str, str]]:
     """Return similar prompts whose L2 distance is below RAG_DISTANCE_THRESHOLD.
@@ -198,15 +201,18 @@ def search_similar_for_rag(query: str, k: int = 3) -> List[Dict[str, str]]:
     original behaviour for first-time users or unrelated queries.
     """
     if not faiss_index or not sentence_model:
+        print("⚠️  RAG skipped: FAISS index not loaded. Run seed_faiss.py to enable.")
         return []
     try:
         query_vector = sentence_model.encode([query])
         D, I = faiss_index.search(query_vector, k)
+        dists = [float(d) for d in D[0]]
+        print(f"🔍 RAG distances (top-{k}): {[f'{d:.3f}' for d in dists]} — threshold={RAG_DISTANCE_THRESHOLD}")
         results = []
         for dist, idx in zip(D[0], I[0]):
             if 0 <= idx < len(golden_prompts_data) and float(dist) < RAG_DISTANCE_THRESHOLD:
                 results.append(golden_prompts_data[idx])
-        print(f"🔍 RAG: {len(results)}/{k} examples passed threshold (best dist={float(D[0][0]):.3f})")
+        print(f"🔍 RAG: {len(results)}/{k} examples passed threshold")
         return results
     except Exception as e:
         print(f"❌ RAG search error: {e}")

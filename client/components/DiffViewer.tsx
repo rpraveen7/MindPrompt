@@ -1,18 +1,14 @@
 import React, { useState } from 'react';
-import { Copy, Check, Download, Play, Loader2 } from 'lucide-react';
+import { Copy, Check, Download } from 'lucide-react';
 
 interface DiffViewerProps {
     oldValue: string;
     newValue: string;
-    onCompare?: () => void;
-    compareLoading?: boolean;
 }
 
 export const DiffViewer: React.FC<DiffViewerProps> = ({
     oldValue,
     newValue,
-    onCompare,
-    compareLoading = false,
 }) => {
     const [copied, setCopied] = useState(false);
 
@@ -61,20 +57,6 @@ export const DiffViewer: React.FC<DiffViewerProps> = ({
                         Optimized Prompt
                     </h3>
                     <div className="flex items-center gap-1">
-                        {onCompare && (
-                            <button
-                                onClick={onCompare}
-                                disabled={compareLoading || !oldValue || !newValue}
-                                title="Compare actual LLM outputs side-by-side"
-                                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors px-2 py-1 rounded hover:bg-slate-700/50 border border-transparent hover:border-slate-600"
-                            >
-                                {compareLoading
-                                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                    : <Play className="w-3.5 h-3.5 fill-current" />
-                                }
-                                Compare Outputs
-                            </button>
-                        )}
                         <div className="w-px h-4 bg-slate-700 mx-1" />
                         <span className="text-xs text-emerald-500/70 font-mono">CO-STAR</span>
                         <button

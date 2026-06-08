@@ -7,7 +7,6 @@ import { MetricsBar } from '../components/MetricsBar';
 import { Sidebar } from '../components/Sidebar';
 import { ApiKeySetup } from '../components/ApiKeySetup';
 import { ApiKeySettings } from '../components/ApiKeySettings';
-import { SimulatePanel } from '../components/SimulatePanel';
 import { Zap, Settings } from 'lucide-react';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -72,9 +71,6 @@ export default function Home() {
     const [similar, setSimilar] = useState<Prompt[]>([]);
     const [history, setHistory] = useState<HistoryItem[]>([]);
     const [loading, setLoading] = useState(false);
-
-    const [simulateResult, setSimulateResult] = useState<{ original: string; optimized: string } | null>(null);
-    const [simulateLoading, setSimulateLoading] = useState(false);
 
     // Load API key from storage on mount
     useEffect(() => {
@@ -145,7 +141,6 @@ export default function Home() {
                 examplesUsed: data.examples_used ?? 0,
             });
             setSimilar(data.similar_prompts);
-            setSimulateResult(null);
 
             // Refresh history from API (new item was saved server-side)
             loadHistory(apiKey);
@@ -157,30 +152,6 @@ export default function Home() {
         }
     };
 
-    const handleCompare = async () => {
-        if (!apiKey || !original || !optimized) return;
-        setSimulateLoading(true);
-        setSimulateResult({ original: '', optimized: '' }); // open panel in loading state
-        try {
-            const res = await fetch(`${API_URL}/simulate`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Gemini-Api-Key': apiKey,
-                },
-                body: JSON.stringify({ original_prompt: original, optimized_prompt: optimized }),
-            });
-            if (!res.ok) throw new Error('Simulation failed');
-            const data = await res.json();
-            setSimulateResult({ original: data.original_output, optimized: data.optimized_output });
-        } catch (err) {
-            console.error(err);
-            alert('Simulation failed. Ensure the backend is running.');
-            setSimulateResult(null);
-        } finally {
-            setSimulateLoading(false);
-        }
-    };
 
     const handleSelectHistory = (item: HistoryItem) => {
         setInput(item.original);
@@ -191,7 +162,6 @@ export default function Home() {
             optimized: item.optimized_metrics,
             examplesUsed: 0,
         });
-        setSimulateResult(null);
     };
 
     const handleDeleteHistory = async (id: string) => {
@@ -258,8 +228,6 @@ export default function Home() {
                 <DiffViewer
                     oldValue={original}
                     newValue={optimized}
-                    onCompare={handleCompare}
-                    compareLoading={simulateLoading}
                 />
             </div>
 
@@ -273,14 +241,6 @@ export default function Home() {
                 />
             )}
 
-            {simulateResult !== null && (
-                <SimulatePanel
-                    originalOutput={simulateResult.original}
-                    optimizedOutput={simulateResult.optimized}
-                    loading={simulateLoading}
-                    onClose={() => setSimulateResult(null)}
-                />
-            )}
         </div>
     );
 }
